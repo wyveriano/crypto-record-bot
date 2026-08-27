@@ -225,10 +225,11 @@ sequenceDiagram
 ```
 
 1. An update is received over the updates channel.
-2. If `whiteList` contains entries, the bot validates whether `update.Message.From.ID` is present.
-3. If unauthorized, access is denied and logged; execution terminates for that message.
-4. If authorized, the message is dispatched concurrently in a goroutine (`go bot.commandHandler.Handle(*update.Message)`).
-5. [`CommandHandler`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/command_handler.go#L21) tests each command via `ShouldExecute(message)` and runs `Execute(message)` on matches.
+2. **Whitelist Evaluation**:
+   - **If `WHITE_LIST` is configured**: The bot verifies if `update.Message.From.ID` is present in the allowed list. If unauthorized, access is denied, logged on the server, and the message is discarded.
+   - **If `WHITE_LIST` is empty or unset**: Whitelist filtering is bypassed (`len(bot.whiteList) == 0`). The bot operates in **public mode**, allowing any Telegram user to interact and execute commands.
+3. If authorized (or running in public mode), the message is dispatched concurrently in a goroutine (`go bot.commandHandler.Handle(*update.Message)`).
+4. [`CommandHandler`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/command_handler.go#L21) tests each command via `ShouldExecute(message)` and runs `Execute(message)` on matches.
 
 ---
 
@@ -423,8 +424,12 @@ The bot utilizes SQLite with GORM auto-migrations. Table name: `alerts`.
 | Variable | Type | Required | Description | Example |
 | :--- | :--- | :--- | :--- | :--- |
 | `TELEGRAM_TOKEN` | `string` | **Yes** | Telegram Bot API token obtained from [@BotFather](https://t.me/botfather). | `123456789:ABCdefGHIjklMNOpqrsTUVwxyz` |
-| `WHITE_LIST` | `string` | No | Comma-separated list of numeric Telegram User IDs authorized to interact with the bot. If empty, all users can interact. | `123456789,987654321` |
+| `WHITE_LIST` | `string` | No | Comma-separated list of numeric Telegram User IDs authorized to interact with the bot. | `123456789,987654321` |
 | `PROFILE` | `string` | No | Set to `dev` to enable verbose Telegram Bot API debug logs. | `dev` or `prod` |
+
+> ℹ️ **Note on `WHITE_LIST` behavior:**
+> - **Empty or Unset (Default)**: The bot runs in **public mode**. Any Telegram user or group chat can issue commands and manage alerts.
+> - **Populated with IDs**: The bot runs in **restricted mode**. Only users whose numeric Telegram User IDs are listed in `WHITE_LIST` will be allowed to execute commands. Messages from unauthorized users are ignored and logged.
 
 ---
 
