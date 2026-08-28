@@ -7,34 +7,46 @@ import (
 	"time"
 )
 
+// Alert represents a user-defined price alert threshold for a cryptocurrency.
 type Alert struct {
-	ChatId        int64
-	UserId        int64
+	ChatID        int64
+	UserID        int64
 	CoinName      string
 	IsGreaterThan bool
 	Price         float64
 	CreatedAt     time.Time
 }
 
-func (a *Alert) String() string {
-	diamondSymbol := "<"
+// String returns a human-readable representation of the alert.
+func (a Alert) String() string {
+	symbol := "<"
 	if a.IsGreaterThan {
-		diamondSymbol = ">"
+		symbol = ">"
 	}
-	return fmt.Sprintf("%s %s %s", a.CoinName, diamondSymbol, a.FormattedPrice())
+	return fmt.Sprintf("%s %s %s", a.CoinName, symbol, a.FormattedPrice())
 }
 
-func (a *Alert) FormattedPrice() string {
-	return strconv.FormatFloat(a.Price, 'f', -1, 32)
+// FormattedPrice formats the threshold price to a trimmed string.
+func (a Alert) FormattedPrice() string {
+	return strconv.FormatFloat(a.Price, 'f', -1, 64)
 }
 
-func MakeAlert(chatId int64, userId int64, coinName string, isGreaterThan bool, price float64) Alert {
+// Matches returns true if the given market price triggers this alert threshold.
+func (a Alert) Matches(currentPrice float64) bool {
+	if a.IsGreaterThan {
+		return currentPrice > a.Price
+	}
+	return currentPrice < a.Price
+}
+
+// NewAlert constructs an Alert instance with normalized coin name and creation time.
+func NewAlert(chatID, userID int64, coinName string, isGreaterThan bool, price float64) Alert {
 	return Alert{
-		chatId,
-		userId,
-		strings.ToLower(coinName),
-		isGreaterThan,
-		price,
-		time.Now(),
+		ChatID:        chatID,
+		UserID:        userID,
+		CoinName:      strings.ToLower(strings.TrimSpace(coinName)),
+		IsGreaterThan: isGreaterThan,
+		Price:         price,
+		CreatedAt:     time.Now().UTC(),
 	}
 }

@@ -1,6 +1,6 @@
 # Crypto Record Bot 🤖📈
 
-A Go-based Telegram bot designed to monitor cryptocurrency prices and set automated price threshold alerts using the CoinGecko API and SQLite storage.
+A modern Go-based Telegram bot designed to monitor cryptocurrency prices and set automated price threshold alerts using the CoinGecko API and SQLite storage, built following clean Hexagonal Architecture and Domain-Driven Design principles.
 
 ---
 
@@ -8,8 +8,9 @@ A Go-based Telegram bot designed to monitor cryptocurrency prices and set automa
 
 - [Overview](#-overview)
 - [Architecture & Design Patterns](#-architecture--design-patterns)
-  - [Project Structure](#project-structure)
-  - [Architectural Layers](#architectural-layers)
+  - [Architectural Overview](#architectural-overview)
+  - [Project Layout](#project-layout)
+  - [Layer Responsibilities](#layer-responsibilities)
 - [Third-Party Libraries & Dependencies](#-third-party-libraries--dependencies)
 - [Detailed System Flows](#-detailed-system-flows)
   - [1. Application Bootstrapping & Lifecycle](#1-application-bootstrapping--lifecycle)
@@ -23,7 +24,7 @@ A Go-based Telegram bot designed to monitor cryptocurrency prices and set automa
 - [Configuration & Environment Variables](#-configuration--environment-variables)
 - [Installation & Getting Started](#-installation--getting-started)
 - [Bot Commands Reference](#-bot-commands-reference)
-- [Technical Insights & Future Enhancements](#-technical-insights--future-enhancements)
+- [Key Improvements & Technical Notes](#-key-improvements--technical-notes)
 
 ---
 
@@ -31,7 +32,7 @@ A Go-based Telegram bot designed to monitor cryptocurrency prices and set automa
 
 **Crypto Record Bot** connects to Telegram via long-polling to provide users with cryptocurrency market data. It allows users to:
 - Check real-time cryptocurrency prices with 24-hour percentage changes and contextual reaction emojis (🚀, 😎, 😓).
-- Set customizable threshold alerts (trigger when price is greater `>` or lower `<` than a specified value).
+- Set customizable threshold alerts (trigger when price is greater `>` or lower `<` than a specified target).
 - Receive automated Telegram push notifications in background cycles when price conditions are satisfied.
 - List and delete active price alerts.
 - Restrict bot access using an optional user whitelist.
@@ -40,111 +41,100 @@ A Go-based Telegram bot designed to monitor cryptocurrency prices and set automa
 
 ## 🏛 Architecture & Design Patterns
 
-The project is structured following **Hexagonal Architecture (Ports and Adapters)** along with principles from **Domain-Driven Design (DDD)** and the **Strategy Pattern**.
+The project follows **Hexagonal Architecture (Ports and Adapters)** along with principles from **Domain-Driven Design (DDD)**, structured logging (`slog`), and graceful shutdown handling.
 
 ```mermaid
 graph TD
     subgraph Infrastructure_In ["Infrastructure (Incoming Adapters)"]
-        TG[Telegram Long Polling Bot]
+        TG["Telegram Bot Long-Polling Adapter"]
     end
 
-    subgraph Application ["Application Layer"]
-        CH[CommandHandler / Dispatcher]
+    subgraph Application ["Application Layer (Use Cases)"]
+        PS["PriceService (GetPrice)"]
+        AS["AlertService (Create, List, Delete, Evaluate)"]
     end
 
-    subgraph Domain ["Domain Layer"]
-        subgraph Ports ["Ports (Interfaces)"]
-            BC[BotClient Port]
-            CR[CryptoRepository Port]
-            AR[AlertRepository Port]
+    subgraph Domain ["Domain Core (Pure Business Logic)"]
+        subgraph Ports ["Outgoing Ports (Interfaces)"]
+            Notifier["Notifier Port"]
+            CryptoRepo["CryptoRepository Port"]
+            AlertRepo["AlertRepository Port"]
         end
-        subgraph Services ["Domain Services & Commands"]
-            PC[PriceCommand]
-            CAC[CreateAlertCommand]
-            DAC[DeleteAlertCommand]
-            LAC[ListAlertsCommand]
-            AS[AlertService - Background Monitor]
-        end
-        subgraph Models ["Domain Models"]
-            Alert[Alert Model]
-            Price[Price & SimplePrice Models]
+        subgraph Models ["Domain Entities & Value Objects"]
+            Alert["Alert Model (Matches, Formatting)"]
+            Price["Price & SimplePrice Models"]
         end
     end
 
     subgraph Infrastructure_Out ["Infrastructure (Outgoing Adapters)"]
-        TGApi[Telegram Bot API Client]
-        Gecko[CoinGecko Client]
-        GORM[GORM SQLite Repository]
+        TGBot["Telegram Bot API Adapter (Implements Notifier)"]
+        GeckoRepo["CoinGecko Client Adapter (Implements CryptoRepository)"]
+        GormRepo["GORM SQLite Adapter (Implements AlertRepository)"]
     end
 
-    TG -->|Messages| CH
-    CH -->|Executes| PC
-    CH -->|Executes| CAC
-    CH -->|Executes| DAC
-    CH -->|Executes| LAC
-    AS -.->|Runs periodically| Ports
+    TG -->|Parses commands| PS
+    TG -->|Parses commands| AS
+    PS --> CryptoRepo
+    AS --> CryptoRepo
+    AS --> AlertRepo
+    AS --> Notifier
 
-    PC --> Ports
-    CAC --> Ports
-    DAC --> Ports
-    LAC --> Ports
-
-    BC -.->|Implements| TGApi
-    CR -.->|Implements| Gecko
-    AR -.->|Implements| GORM
+    Notifier -.->|Implements| TGBot
+    CryptoRepo -.->|Implements| GeckoRepo
+    AlertRepo -.->|Implements| GormRepo
 ```
 
-### Project Structure
+### Project Layout
 
 ```text
 CryptoRecordBot/
 ├── cmd/
-│   └── main.go                                  # Main application entry point
+│   └── main.go                                  # Main application entry point & signal handling
 ├── internal/
-│   ├── application/
-│   │   └── command_handler.go                   # Command dispatcher (Application layer)
+│   ├── config/
+│   │   └── config.go                            # Centralized environment configuration loader
 │   ├── bootstrap/
-│   │   └── wire.go                              # Dependency injection & service initialization
+│   │   └── app.go                               # Application lifecycle & dependency wiring
 │   ├── domain/
 │   │   ├── model/
-│   │   │   ├── alert.go                         # Alert domain entity & formatting
-│   │   │   └── price.go                         # Price value objects & reaction symbols
-│   │   ├── ports/
-│   │   │   ├── clients.go                       # BotClient interface definition
-│   │   │   └── repositories.go                  # CryptoRepository & AlertRepository interfaces
-│   │   └── service/
-│   │       ├── alert_service.go                 # Background price evaluator & notifier
-│   │       └── commands.go                      # Command interface & command implementations
+│   │   │   ├── alert.go                         # Alert domain entity & business evaluation
+│   │   │   └── price.go                         # Price value objects & sentiment symbols
+│   │   └── ports/
+│   │       ├── notifier.go                      # Outgoing user notification port (transport-agnostic)
+│   │       └── repositories.go                  # Outgoing CryptoRepository & AlertRepository ports
+│   ├── application/
+│   │   ├── price_service.go                     # Price query application use case
+│   │   └── alert_service.go                     # Alert management & background evaluation use cases
 │   └── infrastructure/
-│       ├── bot.go                               # Telegram bot long-polling & whitelist adapter
+│       ├── telegram/
+│       │   └── bot.go                           # Telegram long-polling adapter & Notifier implementation
 │       ├── client/
-│       │   └── crypto_repository.go             # CoinGecko API adapter implementation
-│       └── persistance/
-│           ├── database.go                      # GORM SQLite connection & auto-migration
-│           ├── entities.go                      # AlertDAO database entity
-│           └── repositories.go                  # GORM Alert repository implementation
+│       │   └── crypto_repository.go             # CoinGecko REST client adapter
+│       └── persistence/
+│           ├── database.go                      # GORM SQLite connection & schema auto-migration
+│           ├── entities.go                      # AlertDAO database entity & domain mappers
+│           └── repositories.go                  # GORM AlertRepository implementation
 ├── go.mod
 ├── go.sum
 └── README.md
 ```
 
-### Architectural Layers
+### Layer Responsibilities
 
-1. **Domain Layer (`internal/domain/`)**:
-   - **Models**: Defines pure business entities ([`Alert`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/model/alert.go#L10), [`PriceWithChange`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/model/price.go#L3), [`SimplePrice`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/model/price.go#L21)) without external dependencies.
-   - **Ports**: Interface contracts ([`BotClient`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/clients.go#L5), [`CryptoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L8), [`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L14)) decoupling domain logic from specific third-party libraries.
-   - **Domain Services & Commands**: Encapsulates command behaviors implementing the [`Command`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/service/commands.go#L12) interface (`ShouldExecute`, `Execute`) and the periodic [`AlertService`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/service/alert_service.go#L11).
+1. **Domain Layer ([`internal/domain/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain)):**
+   - **Models**: Defines pure business entities ([`Alert`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/model/alert.go#L10), [`PriceWithChange`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/model/price.go#L4), [`SimplePrice`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/model/price.go#L23)) with zero external dependencies.
+   - **Ports**: Interface contracts ([`Notifier`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/notifier.go#L6), [`CryptoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L9), [`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L16)) specifying capabilities required by the domain.
 
-2. **Application Layer (`internal/application/`)**:
-   - Contains [`CommandHandler`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/command_handler.go#L8), which coordinates and routes incoming Telegram messages to the appropriate domain command using the Strategy pattern.
+2. **Application Layer ([`internal/application/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application)):**
+   - Contains use case services: [`PriceService`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/price_service.go#L12) and [`AlertService`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/alert_service.go#L16). Orchestrates domain logic, calls repository ports, and triggers user notifications.
 
-3. **Infrastructure Layer (`internal/infrastructure/`)**:
-   - **Telegram Adapter ([`Bot`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/bot.go#L9))**: Listens for updates using long-polling, handles whitelist filtering, and spawns concurrent goroutines per message.
-   - **Crypto Client ([`GeckoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/client/crypto_repository.go#L12))**: Implements [`CryptoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L8) interacting with CoinGecko REST endpoints.
-   - **Persistence ([`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/persistance/repositories.go#L9))**: Implements [`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L14) using GORM and SQLite.
+3. **Infrastructure Layer ([`internal/infrastructure/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure)):**
+   - **Telegram Adapter ([`Bot`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/telegram/bot.go#L18))**: Listens for updates using long-polling, handles whitelist authorization, parses chat commands, calls application services, and implements [`ports.Notifier`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/notifier.go#L6).
+   - **Crypto Client ([`GeckoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/client/crypto_repository.go#L15))**: Implements [`CryptoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L9) interacting with CoinGecko REST endpoints.
+   - **Persistence ([`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/persistence/repositories.go#L13))**: Implements [`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L16) using GORM and SQLite.
 
-4. **Bootstrap & Wire (`internal/bootstrap/`)**:
-   - Acts as the composition root ([`wire.go`](file:///C:/Users/emipo/go/crypto-record-bot/internal/bootstrap/wire.go#L26)). Reads environment variables, instantiates concrete implementations, injects dependencies into ports, and launches background routines.
+4. **Bootstrap & Configuration ([`internal/bootstrap/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/bootstrap), [`internal/config/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/config)):**
+   - Centralizes environment variable parsing and validation. Initializes database connections, repositories, application use cases, and starts the background worker loop with graceful cancellation.
 
 ---
 
@@ -168,33 +158,35 @@ CryptoRecordBot/
 sequenceDiagram
     autonumber
     participant Main as cmd/main.go
+    participant Config as config.Load()
     participant Bootstrap as bootstrap.NewApp()
     participant DB as SQLite / GORM
     participant TG as Telegram Bot API
-    participant Worker as Background Goroutine (AlertService)
+    participant Worker as Background Goroutine (AlertWorker)
     participant Bot as Bot.Start()
 
-    Main->>Bootstrap: NewApp()
-    Bootstrap->>Bootstrap: Read Env (WHITE_LIST, TELEGRAM_TOKEN, PROFILE)
-    Bootstrap->>TG: NewBotApi(token)
-    Bootstrap->>DB: persistance.NewDB() & autoMigrate(AlertDAO)
-    Bootstrap->>Bootstrap: Wire Repositories, Commands & CommandHandler
-    Bootstrap->>Worker: go AlertService.AlertByCoinName() (every 3m)
-    Bootstrap-->>Main: Return &App{Bot: bot}
-    Main->>Bot: app.Bot.Start()
-    Bot->>TG: GetUpdatesChan(updateConfig) (Long polling)
+    Main->>Config: Load environment variables
+    Config-->>Main: Return &Config
+    Main->>Bootstrap: NewApp(cfg)
+    Bootstrap->>Bootstrap: Setup slog logger (JSON/Text)
+    Bootstrap->>DB: persistence.NewDB(dbPath) & AutoMigrate
+    Bootstrap->>TG: telegram.NewBotAPI(token)
+    Bootstrap->>Bootstrap: Wire Repositories, Services, and Bot Adapter
+    Bootstrap-->>Main: Return &App
+    Main->>Main: app.Run(ctx) (listening to SIGINT/SIGTERM)
+    par Run background worker
+        Main->>Worker: go a.runAlertWorker(ctx) (ticker: alertInterval)
+    and Run bot long polling
+        Main->>Bot: a.bot.Start(ctx)
+    end
 ```
 
-1. [`main.go`](file:///C:/Users/emipo/go/crypto-record-bot/cmd/main.go#L7) invokes [`bootstrap.NewApp()`](file:///C:/Users/emipo/go/crypto-record-bot/internal/bootstrap/wire.go#L26).
-2. Reads environment variables:
-   - `TELEGRAM_TOKEN` (required).
-   - `WHITE_LIST` (optional comma-delimited string parsed into `[]int64`).
-   - `PROFILE` (enables debug logging when set to `"dev"`).
-3. Connects to SQLite database `crypto_record.db` and runs `autoMigrate` for [`AlertDAO`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/persistance/entities.go#L7).
-4. Creates CoinGecko HTTP client with a 10-second timeout.
-5. Instantiates domain commands and registers them within [`CommandHandler`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/command_handler.go#L8).
-6. Spawns an asynchronous background ticker routine executing [`AlertService.AlertByCoinName()`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/service/alert_service.go#L25) every 3 minutes.
-7. Calls [`Bot.Start()`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/bot.go#L23) to initiate Telegram long-polling (timeout = 60 seconds).
+1. [`main.go`](file:///C:/Users/emipo/go/crypto-record-bot/cmd/main.go#L19) sets up signal handling with `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` and loads [`config.Load()`](file:///C:/Users/emipo/go/crypto-record-bot/internal/config/config.go#L20).
+2. [`bootstrap.NewApp(cfg)`](file:///C:/Users/emipo/go/crypto-record-bot/internal/bootstrap/app.go#L28) configures structured logging (`log/slog`).
+3. Connects to SQLite database `crypto_record.db` and runs `AutoMigrate` for [`AlertDAO`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/persistence/entities.go#L8).
+4. Creates CoinGecko HTTP client and wires domain repositories and application services ([`PriceService`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/price_service.go#L12), [`AlertService`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/alert_service.go#L16)).
+5. Instantiates the Telegram bot adapter implementing [`ports.Notifier`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/notifier.go#L6).
+6. [`app.Run(ctx)`](file:///C:/Users/emipo/go/crypto-record-bot/internal/bootstrap/app.go#L67) launches the background alert worker and starts Telegram long-polling until a shutdown signal is received.
 
 ---
 
@@ -204,32 +196,35 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant User as Telegram User
-    participant Bot as Infrastructure Bot
-    participant Handler as CommandHandler
-    participant Cmd as Registered Command
+    participant Bot as Telegram Bot Adapter
+    participant Service as Application Service
 
     User->>Bot: Send message (e.g. /price)
     alt Whitelist is configured
         Bot->>Bot: Check if User.ID is in WhiteList
         alt User not authorized
-            Bot-->>Bot: Log unauthorized attempt & discard
+            Bot-->>Bot: Log warning & discard message
         end
     end
-    Bot->>Handler: go CommandHandler.Handle(message)
-    loop For each registered command
-        Handler->>Cmd: ShouldExecute(message)
-        alt Returns true
-            Handler->>Cmd: Execute(message)
-        end
+    Bot->>Bot: go handleMessage(ctx, msg)
+    alt /price
+        Bot->>Service: PriceService.GetPrice(ctx, coin)
+    else /createalert
+        Bot->>Service: AlertService.CreateAlert(ctx, chatID, userID, coin, op, price)
+    else /listalerts
+        Bot->>Service: AlertService.ListAlerts(ctx, chatID, userID)
+    else /deletealert
+        Bot->>Service: AlertService.DeleteAlert(ctx, chatID, userID, coin)
     end
+    Service-->>Bot: Return result / error
+    Bot-->>User: Reply via Telegram
 ```
 
-1. An update is received over the updates channel.
+1. An update is received over the long-polling channel.
 2. **Whitelist Evaluation**:
    - **If `WHITE_LIST` is configured**: The bot verifies if `update.Message.From.ID` is present in the allowed list. If unauthorized, access is denied, logged on the server, and the message is discarded.
    - **If `WHITE_LIST` is empty or unset**: Whitelist filtering is bypassed (`len(bot.whiteList) == 0`). The bot operates in **public mode**, allowing any Telegram user to interact and execute commands.
-3. If authorized (or running in public mode), the message is dispatched concurrently in a goroutine (`go bot.commandHandler.Handle(*update.Message)`).
-4. [`CommandHandler`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/command_handler.go#L21) tests each command via `ShouldExecute(message)` and runs `Execute(message)` on matches.
+3. If authorized (or running in public mode), the message is dispatched concurrently with a timeout context (`go b.handleMessage(ctx, msg)`).
 
 ---
 
@@ -239,24 +234,24 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant User as Telegram User
-    participant PC as PriceCommand
+    participant Bot as Telegram Bot Adapter
+    participant PS as PriceService
     participant Repo as GeckoRepository
     participant API as CoinGecko API
-    participant TG as Telegram BotClient
 
-    User->>PC: /price [coinName] (default: bitcoin)
-    PC->>Repo: GetPriceWith24hsChange(coinName)
+    User->>Bot: /price [coinName] (default: bitcoin)
+    Bot->>PS: GetPrice(ctx, coinName)
+    PS->>Repo: GetPriceWith24HChange(ctx, coinName)
     Repo->>API: GET /api/v3/simple/price?ids={coin}&vs_currencies=usd&include_24hr_change=true
     alt Success
         API-->>Repo: JSON Price & 24h Change
-        Repo-->>PC: SimplePrice model
-        PC->>PC: Calculate reaction emoji (🚀 / 😎 / 😓)
-        PC->>TG: Send message: "{coin}: usd {price} ({emoji} {change}%)"
-        TG-->>User: Telegram Message
+        Repo-->>PS: SimplePrice model
+        PS-->>Bot: SimplePrice model
+        Bot->>Bot: Format sentiment emoji (🚀 / 😎 / 😓)
+        Bot-->>User: "💰 BITCOIN: USD 50000.00 (😎 2.50%)"
     else Coin Not Found / API Error
-        Repo-->>PC: Error
-        PC->>TG: Send error message
-        TG-->>User: Telegram Message
+        Repo-->>Bot: Error
+        Bot-->>User: "❌ token not found"
     end
 ```
 
@@ -276,33 +271,35 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant User as Telegram User
-    participant CAC as CreateAlertCommand
+    participant Bot as Telegram Bot Adapter
+    participant AS as AlertService
     participant Repo as GeckoRepository
     participant DB as AlertRepository (SQLite)
-    participant TG as Telegram BotClient
 
-    User->>CAC: /createalert <coin> <symbol> <price>
-    CAC->>CAC: Validate argument count (3 args)
-    CAC->>CAC: Validate operator (< or >) and parse price float
-    CAC->>Repo: GetCoinList()
+    User->>Bot: /createalert <coin> <operator> <price>
+    Bot->>Bot: Parse arguments (<coin>, <op>, <price>)
+    Bot->>AS: CreateAlert(ctx, chatID, userID, coin, op, price)
+    AS->>AS: Validate operator (< or >) and price > 0
+    AS->>Repo: IsValidCoin(ctx, coin)
     alt Coin is valid in CoinGecko
-        CAC->>CAC: model.MakeAlert(chatId, userId, coin, isGreaterThan, price)
-        CAC->>DB: Create(alert) (FirstOrCreate)
-        DB-->>CAC: OK
-        CAC->>TG: Send "Done!"
-    else Coin Invalid or Parse Error
-        CAC->>TG: Send validation error message
+        AS->>AS: model.NewAlert(chatID, userID, coin, isGreaterThan, price)
+        AS->>DB: Create(ctx, alert)
+        DB-->>AS: OK
+        AS-->>Bot: Alert model
+        Bot-->>User: "✅ Alert created: bitcoin > 50000"
+    else Coin Invalid or Validation Error
+        AS-->>Bot: Error
+        Bot-->>User: "❌ Error message"
     end
-    TG-->>User: Telegram Message
 ```
 
 - **Command Syntax**: `/createalert <coin_name> <comparison_operator> <target_price>`
 - **Validation Steps**:
   1. Ensures exactly 3 arguments are provided.
   2. Ensures comparison symbol is `<` or `>`.
-  3. Ensures price is a valid decimal number.
-  4. Validates `coinName` against CoinGecko's master coin list (`GetCoinList()`).
-- **Storage**: Persisted into SQLite via GORM `FirstOrCreate`.
+  3. Ensures price is a positive decimal number.
+  4. Validates `coinName` against CoinGecko's master coin list (`IsValidCoin`).
+- **Storage**: Persisted into SQLite via GORM.
 
 ---
 
@@ -312,25 +309,26 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant User as Telegram User
-    participant LAC as ListAlertsCommand
+    participant Bot as Telegram Bot Adapter
+    participant AS as AlertService
     participant DB as AlertRepository (SQLite)
-    participant TG as Telegram BotClient
 
-    User->>LAC: /listalerts
-    LAC->>DB: FindByChatIDAndUserID(chatId, userId)
-    DB-->>LAC: []Alert
+    User->>Bot: /listalerts
+    Bot->>AS: ListAlerts(ctx, chatID, userID)
+    AS->>DB: FindByChatIDAndUserID(ctx, chatID, userID)
+    DB-->>AS: []Alert
+    AS-->>Bot: []Alert
     alt Alerts count == 0
-        LAC->>TG: Send "you dont have alerts "
+        Bot-->>User: "ℹ️ You do not have any active price alerts."
     else Alerts found
-        LAC->>LAC: Format each alert: "{coin} {<|> } {price}"
-        LAC->>TG: Send joined alert list
+        Bot->>Bot: Format alert list
+        Bot-->>User: "📋 Active Price Alerts:\n1. bitcoin > 50000"
     end
-    TG-->>User: Telegram Message
 ```
 
 - **Command Syntax**: `/listalerts`
 - Filters records matching the active `ChatID` and `UserID`.
-- Formats each alert into a readable string (e.g., `bitcoin > 45000`).
+- Formats each alert into a readable numbered list.
 
 ---
 
@@ -340,24 +338,25 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant User as Telegram User
-    participant DAC as DeleteAlertCommand
+    participant Bot as Telegram Bot Adapter
+    participant AS as AlertService
     participant DB as AlertRepository (SQLite)
-    participant TG as Telegram BotClient
 
-    User->>DAC: /deletealert <coin_name>
-    DAC->>DAC: Validate coinName provided
-    DAC->>DB: Delete(alert) WHERE chat_id, user_id, coin_name
-    DB-->>DAC: rowsAffected, err
-    alt rowsAffected > 0
-        DAC->>TG: Send "Done!"
+    User->>Bot: /deletealert <coin_name>
+    Bot->>AS: DeleteAlert(ctx, chatID, userID, coinName)
+    AS->>DB: Delete(ctx, chatID, userID, coinName)
+    DB-->>AS: rowsAffected > 0, err
+    alt Deleted successfully
+        AS-->>Bot: true
+        Bot-->>User: "✅ Alerts for 'bitcoin' deleted successfully."
     else Not Found
-        DAC->>TG: Send "Alert with coinName ({coin}) not found!"
+        AS-->>Bot: false
+        Bot-->>User: "ℹ️ No active alerts found for 'bitcoin'."
     end
-    TG-->>User: Telegram Message
 ```
 
 - **Command Syntax**: `/deletealert <coin_name>` (e.g., `/deletealert bitcoin`).
-- Deletes alerts corresponding to the user and specified coin name.
+- Deletes active alerts for the given coin and user.
 
 ---
 
@@ -366,41 +365,40 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Cron as Background Goroutine
+    participant Worker as Background Worker (Ticker)
     participant AS as AlertService
     participant DB as AlertRepository (SQLite)
     participant Crypto as CryptoRepository (CoinGecko)
-    participant TG as Telegram BotClient
+    participant Notifier as Notifier (Telegram Bot)
 
-    loop Every 3 Minutes
-        Cron->>AS: AlertByCoinName()
-        AS->>DB: FindCoinNames() (SELECT DISTINCT coin_name)
-        DB-->>AS: []string (unique coins)
+    loop Every ALERT_INTERVAL (default: 3m)
+        Worker->>AS: EvaluateAndTriggerAlerts(ctx)
+        AS->>DB: FindCoinNames(ctx) (SELECT DISTINCT coin_name)
+        DB-->>AS: []string (unique active coins)
         loop For each unique coin
-            AS->>Crypto: GetPrice(coinName, "usd")
-            Crypto-->>AS: MarketPrice
-            AS->>DB: FindByCoinName(coinName)
-            DB-->>AS: []Alert
-            loop For each alert
-                alt isGreaterThan AND targetPrice < MarketPrice
-                    AS->>TG: Send "{coin} price is {marketPrice} and higher than {targetPrice}"
-                    AS->>DB: Delete(alert)
-                else isLowerThan AND targetPrice > MarketPrice
-                    AS->>TG: Send "{coin} price is {marketPrice} and lower than {targetPrice}"
-                    AS->>DB: Delete(alert)
+            AS->>Crypto: GetPrice(ctx, coinName, "usd")
+            alt API error
+                AS->>AS: Log error & continue to next coin (resilient)
+            else Success
+                Crypto-->>AS: MarketPrice
+                AS->>DB: FindByCoinName(ctx, coinName)
+                DB-->>AS: []Alert
+                loop For each alert
+                    alt alert.Matches(marketPrice)
+                        AS->>Notifier: Notify(ctx, alert.ChatID, message)
+                        AS->>DB: DeleteExact(ctx, alert)
+                    end
                 end
             end
         end
     end
 ```
 
-1. **Cycle Interval**: Executes every 3 minutes.
+1. **Cycle Interval**: Executes periodically based on `ALERT_INTERVAL` (default: 3 minutes).
 2. **Distinct Coins Query**: Calls `FindCoinNames()` to retrieve unique coin names with active alerts, minimizing CoinGecko API calls.
-3. **Price Query**: Fetches the current USD market price for each distinct coin.
-4. **Condition Evaluation**:
-   - **Upper bound triggered**: `alert.IsGreaterThan && alert.Price < currentMarketPrice`
-   - **Lower bound triggered**: `!alert.IsGreaterThan && alert.Price > currentMarketPrice`
-5. **Notification & Cleanup**: Sends a Telegram push notification to the respective `ChatId` and removes the triggered alert from the database.
+3. **Resilient Price Query**: Fetches the current USD market price. If one coin fails, it logs the error and continues to the next without breaking the loop.
+4. **Condition Evaluation**: Evaluates `alert.Matches(marketPrice)` for each stored alert.
+5. **Notification & Cleanup**: Sends a notification to the user via [`ports.Notifier`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/notifier.go#L6) and removes the triggered alert from the database.
 
 ---
 
@@ -421,11 +419,13 @@ The bot utilizes SQLite with GORM auto-migrations. Table name: `alerts`.
 
 ## ⚙️ Configuration & Environment Variables
 
-| Variable | Type | Required | Description | Example |
-| :--- | :--- | :--- | :--- | :--- |
-| `TELEGRAM_TOKEN` | `string` | **Yes** | Telegram Bot API token obtained from [@BotFather](https://t.me/botfather). | `123456789:ABCdefGHIjklMNOpqrsTUVwxyz` |
-| `WHITE_LIST` | `string` | No | Comma-separated list of numeric Telegram User IDs authorized to interact with the bot. | `123456789,987654321` |
-| `PROFILE` | `string` | No | Set to `dev` to enable verbose Telegram Bot API debug logs. | `dev` or `prod` |
+| Variable | Type | Required | Default | Description | Example |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `TELEGRAM_TOKEN` | `string` | **Yes** | - | Telegram Bot API token obtained from [@BotFather](https://t.me/botfather). | `123456789:ABCdefGHIjklMNOpqrsTUVwxyz` |
+| `WHITE_LIST` | `string` | No | *(empty)* | Comma-separated list of numeric Telegram User IDs authorized to interact with the bot. | `123456789,987654321` |
+| `PROFILE` | `string` | No | `prod` | Logging format and level (`dev` for text debug logs, `prod` for JSON logs). | `dev` or `prod` |
+| `DB_PATH` | `string` | No | `crypto_record.db` | Path to the SQLite database file. | `crypto_record.db` |
+| `ALERT_INTERVAL` | `string` | No | `3m` | Interval between background alert evaluation cycles (parsed via `time.ParseDuration`). | `1m`, `3m`, `5m` |
 
 > ℹ️ **Note on `WHITE_LIST` behavior:**
 > - **Empty or Unset (Default)**: The bot runs in **public mode**. Any Telegram user or group chat can issue commands and manage alerts.
@@ -485,13 +485,10 @@ The bot utilizes SQLite with GORM auto-migrations. Table name: `alerts`.
 
 ---
 
-## 💡 Technical Insights & Future Enhancements
+## 💡 Key Improvements & Technical Notes
 
-- **TLS Verification**: In [`wire.go`](file:///C:/Users/emipo/go/crypto-record-bot/internal/bootstrap/wire.go#L71), `InsecureSkipVerify: true` is configured on the HTTP transport. For production environments, it is recommended to set this to `false` and use standard certificate verification.
-- **CoinGecko Rate Limits**: The CoinGecko public API has a rate limit (10–30 calls/minute). The bot batches distinct coin checks during the 3-minute alert loop to conserve API credits.
-- **SQLite Concurrency**: GORM interacts with SQLite file `crypto_record.db`. Enabling WAL (Write-Ahead Logging) mode is recommended for high-volume concurrent write operations.
-- **Planned / Suggested Improvements**:
-  - Message replies and inline keyboards for interactive alert creation.
-  - Multi-currency support (EUR, GBP, JPY in addition to USD).
-  - Webhook support as an alternative to long-polling.
-  - Persistence of usernames and chat metadata.
+- **Pure Hexagonal Architecture**: The domain layer has zero imports of third-party libraries (`telegram-bot-api`, `go-gecko`, `gorm`). All external interactions are mediated through pure domain ports ([`Notifier`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/notifier.go#L6), [`CryptoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L9), [`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L16)).
+- **Graceful Lifecycle & Shutdown**: Full `context.Context` propagation across all layers. Interrupt signals (`SIGINT`, `SIGTERM`) safely stop the background ticker and Telegram update listener without data corruption.
+- **Structured Logging (`slog`)**: Replaced standard `log.Print` with standard Go `log/slog` structured logging (JSON in production, text in dev).
+- **Error Cascading Fix**: The background alert evaluation loop uses `continue` instead of `return` on coin query failure, ensuring individual API hiccups do not halt monitoring for other tokens.
+- **Centralized Configuration**: All environment variables are parsed and validated at startup in [`internal/config/config.go`](file:///C:/Users/emipo/go/crypto-record-bot/internal/config/config.go).
