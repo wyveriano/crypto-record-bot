@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"CryptoRecordBot/internal/application"
 	"CryptoRecordBot/internal/config"
+	"CryptoRecordBot/internal/guard"
 	"CryptoRecordBot/internal/infrastructure/client"
 	"CryptoRecordBot/internal/infrastructure/persistence"
 	botAdapter "CryptoRecordBot/internal/infrastructure/telegram"
@@ -23,6 +24,7 @@ type App struct {
 	cfg          *config.Config
 	bot          *botAdapter.Bot
 	alertService *application.AlertService
+	guard        *guard.Guard
 }
 
 // NewApp initializes all database connections, clients, and services.
@@ -53,22 +55,32 @@ func NewApp(cfg *config.Config) (*App, error) {
 	// 4. Initialize Application Services
 	priceService := application.NewPriceService(cryptoRepo)
 
-	// 5. Initialize Telegram Adapter & Alert Service
-	var alertService *application.AlertService
-	bot := botAdapter.NewBot(botAPI, priceService, nil, cfg.WhiteList)
-	alertService = application.NewAlertService(alertRepo, cryptoRepo, bot)
+	// 5. Initialize Guard
+	g := guard.New(context.Background(), guard.Config{
+		RateLimit:       cfg.RateLimit,
+		RateWindow:      cfg.RateWindow,
+		WhiteList:       cfg.WhiteList,
+		CleanupInterval: cfg.CleanupInterval,
+	})
+
+	// 6. Initialize Telegram Adapter & Alert Service
+	bot := botAdapter.NewBot(botAPI, priceService, nil, g)
+	alertService := application.NewAlertService(alertRepo, cryptoRepo, bot, cfg.MaxAlertsPerUser)
 	// Inject alertService into bot
-	bot = botAdapter.NewBot(botAPI, priceService, alertService, cfg.WhiteList)
+	bot = botAdapter.NewBot(botAPI, priceService, alertService, g)
 
 	return &App{
 		cfg:          cfg,
 		bot:          bot,
 		alertService: alertService,
+		guard:        g,
 	}, nil
 }
 
 // Run executes the bot and the background monitoring loop until ctx is cancelled.
 func (a *App) Run(ctx context.Context) error {
+	defer a.guard.Close()
+
 	slog.Info("Application running. Press CTRL+C to terminate.")
 
 	// Launch background alert evaluation worker

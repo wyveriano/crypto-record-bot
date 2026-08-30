@@ -20,4 +20,5 @@ type AlertRepository interface {
 	DeleteExact(ctx context.Context, alert model.Alert) error
 	FindCoinNames(ctx context.Context) ([]string, error)
 	FindByCoinName(ctx context.Context, coinName string) ([]model.Alert, error)
+	CountByUserID(ctx context.Context, userID int64) (int64, error)
 }

@@ -14,7 +14,7 @@ A modern Go-based Telegram bot designed to monitor cryptocurrency prices and set
 - [Third-Party Libraries & Dependencies](#-third-party-libraries--dependencies)
 - [Detailed System Flows](#-detailed-system-flows)
   - [1. Application Bootstrapping & Lifecycle](#1-application-bootstrapping--lifecycle)
-  - [2. Telegram Update & Whitelist Dispatch Flow](#2-telegram-update--whitelist-dispatch-flow)
+  - [2. Telegram Update & Guard Enforcement Flow](#2-telegram-update--guard-enforcement-flow)
   - [3. Price Query Flow (`/price`)](#3-price-query-flow-price)
   - [4. Alert Creation Flow (`/createalert`)](#4-alert-creation-flow-createalert)
   - [5. Alert Listing Flow (`/listalerts`)](#5-alert-listing-flow-listalerts)
@@ -35,13 +35,14 @@ A modern Go-based Telegram bot designed to monitor cryptocurrency prices and set
 - Set customizable threshold alerts (trigger when price is greater `>` or lower `<` than a specified target).
 - Receive automated Telegram push notifications in background cycles when price conditions are satisfied.
 - List and delete active price alerts.
-- Restrict bot access using an optional user whitelist.
+- Enforce in-memory sliding-window **per-user rate limiting** (`guard` package) and **per-user active alert quotas**.
+- Restrict or grant unlimited bypass access using an optional user whitelist.
 
 ---
 
 ## 🏛 Architecture & Design Patterns
 
-The project follows **Hexagonal Architecture (Ports and Adapters)** along with principles from **Domain-Driven Design (DDD)**, structured logging (`slog`), and graceful shutdown handling.
+The project follows **Hexagonal Architecture (Ports and Adapters)** along with principles from **Domain-Driven Design (DDD)**, structured logging (`slog`), zero-dependency protection (`guard`), and graceful shutdown handling.
 
 ```mermaid
 graph TD
@@ -49,9 +50,13 @@ graph TD
         TG["Telegram Bot Long-Polling Adapter"]
     end
 
+    subgraph Protection ["Bot Abuse Protection"]
+        Guard["Guard (Rate Limiter & Whitelist)"]
+    end
+
     subgraph Application ["Application Layer (Use Cases)"]
         PS["PriceService (GetPrice)"]
-        AS["AlertService (Create, List, Delete, Evaluate)"]
+        AS["AlertService (Create, List, Delete, Evaluate, Quotas)"]
     end
 
     subgraph Domain ["Domain Core (Pure Business Logic)"]
@@ -72,6 +77,7 @@ graph TD
         GormRepo["GORM SQLite Adapter (Implements AlertRepository)"]
     end
 
+    TG -->|Rate limits & whitelist check| Guard
     TG -->|Parses commands| PS
     TG -->|Parses commands| AS
     PS --> CryptoRepo
@@ -95,6 +101,10 @@ CryptoRecordBot/
 │   │   └── config.go                            # Centralized environment configuration loader
 │   ├── bootstrap/
 │   │   └── app.go                               # Application lifecycle & dependency wiring
+│   ├── guard/
+│   │   ├── guard.go                             # Guard orchestrator: rate limiting & whitelist bypass
+│   │   ├── ratelimiter.go                       # Sliding window rate limiter implementation
+│   │   └── config.go                            # GuardConfig with defaults
 │   ├── domain/
 │   │   ├── model/
 │   │   │   ├── alert.go                         # Alert domain entity & business evaluation
@@ -104,7 +114,7 @@ CryptoRecordBot/
 │   │       └── repositories.go                  # Outgoing CryptoRepository & AlertRepository ports
 │   ├── application/
 │   │   ├── price_service.go                     # Price query application use case
-│   │   └── alert_service.go                     # Alert management & background evaluation use cases
+│   │   └── alert_service.go                     # Alert management, quota check & background evaluation
 │   └── infrastructure/
 │       ├── telegram/
 │       │   └── bot.go                           # Telegram long-polling adapter & Notifier implementation
@@ -121,20 +131,24 @@ CryptoRecordBot/
 
 ### Layer Responsibilities
 
-1. **Domain Layer ([`internal/domain/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain)):**
+1. **Guard Package ([`internal/guard/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/guard)):**
+   - Pure Go, zero external dependencies.
+   - Provides sliding-window per-user rate limiting, whitelist bypass, and background cleanup goroutine.
+
+2. **Domain Layer ([`internal/domain/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain)):**
    - **Models**: Defines pure business entities ([`Alert`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/model/alert.go#L10), [`PriceWithChange`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/model/price.go#L4), [`SimplePrice`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/model/price.go#L23)) with zero external dependencies.
    - **Ports**: Interface contracts ([`Notifier`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/notifier.go#L6), [`CryptoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L9), [`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L16)) specifying capabilities required by the domain.
 
-2. **Application Layer ([`internal/application/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application)):**
-   - Contains use case services: [`PriceService`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/price_service.go#L12) and [`AlertService`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/alert_service.go#L16). Orchestrates domain logic, calls repository ports, and triggers user notifications.
+3. **Application Layer ([`internal/application/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application)):**
+   - Contains use case services: [`PriceService`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/price_service.go#L12) and [`AlertService`](file:///C:/Users/emipo/go/crypto-record-bot/internal/application/alert_service.go#L16). Orchestrates domain logic, enforces alert quotas, calls repository ports, and triggers user notifications.
 
-3. **Infrastructure Layer ([`internal/infrastructure/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure)):**
-   - **Telegram Adapter ([`Bot`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/telegram/bot.go#L18))**: Listens for updates using long-polling, handles whitelist authorization, parses chat commands, calls application services, and implements [`ports.Notifier`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/notifier.go#L6).
+4. **Infrastructure Layer ([`internal/infrastructure/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure)):**
+   - **Telegram Adapter ([`Bot`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/telegram/bot.go#L18))**: Listens for updates using long-polling, delegates rate limiting & whitelist checks to `Guard`, parses chat commands, calls application services, and implements [`ports.Notifier`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/notifier.go#L6).
    - **Crypto Client ([`GeckoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/client/crypto_repository.go#L15))**: Implements [`CryptoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L9) interacting with CoinGecko REST endpoints.
    - **Persistence ([`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/infrastructure/persistence/repositories.go#L13))**: Implements [`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L16) using GORM and SQLite.
 
-4. **Bootstrap & Configuration ([`internal/bootstrap/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/bootstrap), [`internal/config/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/config)):**
-   - Centralizes environment variable parsing and validation. Initializes database connections, repositories, application use cases, and starts the background worker loop with graceful cancellation.
+5. **Bootstrap & Configuration ([`internal/bootstrap/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/bootstrap), [`internal/config/`](file:///C:/Users/emipo/go/crypto-record-bot/internal/config)):**
+   - Centralizes environment variable parsing and validation. Initializes database connections, repositories, guard, application use cases, and starts the background worker loop with graceful cancellation.
 
 ---
 
@@ -190,21 +204,26 @@ sequenceDiagram
 
 ---
 
-### 2. Telegram Update & Whitelist Dispatch Flow
+### 2. Telegram Update & Guard Enforcement Flow
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant User as Telegram User
     participant Bot as Telegram Bot Adapter
+    participant Guard as Guard (Rate Limiter)
     participant Service as Application Service
 
     User->>Bot: Send message (e.g. /price)
-    alt Whitelist is configured
-        Bot->>Bot: Check if User.ID is in WhiteList
-        alt User not authorized
-            Bot-->>Bot: Log warning & discard message
-        end
+    Bot->>Bot: Check if msg.IsCommand()
+    Bot->>Guard: Allow(msg.From.ID)
+    alt User is Whitelisted
+        Guard-->>Bot: nil (Bypass limits)
+    else Rate limit exceeded
+        Guard-->>Bot: Error ("⏳ Too many requests. Please wait Xs before trying again")
+        Bot-->>User: Reply with retry cooldown message
+    else Allowed
+        Guard-->>Bot: nil (Request allowed)
     end
     Bot->>Bot: go handleMessage(ctx, msg)
     alt /price
@@ -221,10 +240,11 @@ sequenceDiagram
 ```
 
 1. An update is received over the long-polling channel.
-2. **Whitelist Evaluation**:
-   - **If `WHITE_LIST` is configured**: The bot verifies if `update.Message.From.ID` is present in the allowed list. If unauthorized, access is denied, logged on the server, and the message is discarded.
-   - **If `WHITE_LIST` is empty or unset**: Whitelist filtering is bypassed (`len(bot.whiteList) == 0`). The bot operates in **public mode**, allowing any Telegram user to interact and execute commands.
-3. If authorized (or running in public mode), the message is dispatched concurrently with a timeout context (`go b.handleMessage(ctx, msg)`).
+2. **Guard Enforcement**:
+   - `b.guard.Allow(msg.From.ID)` is invoked on every command.
+   - If the user is on `WHITE_LIST`, rate limiting is completely bypassed.
+   - If the user exceeds the configured `RATE_LIMIT` within `RATE_WINDOW`, the bot replies with a dynamic cooldown message (e.g. `⏳ Too many requests. Please wait 23s before trying again`).
+3. If allowed, the command is executed concurrently with a timeout context.
 
 ---
 
@@ -273,13 +293,21 @@ sequenceDiagram
     participant User as Telegram User
     participant Bot as Telegram Bot Adapter
     participant AS as AlertService
-    participant Repo as GeckoRepository
     participant DB as AlertRepository (SQLite)
+    participant Repo as GeckoRepository
 
     User->>Bot: /createalert <coin> <operator> <price>
     Bot->>Bot: Parse arguments (<coin>, <op>, <price>)
     Bot->>AS: CreateAlert(ctx, chatID, userID, coin, op, price)
     AS->>AS: Validate operator (< or >) and price > 0
+    alt Quota Enabled (MAX_ALERTS_PER_USER > 0)
+        AS->>DB: CountByUserID(ctx, userID)
+        DB-->>AS: count
+        alt count >= maxAlerts
+            AS-->>Bot: Error ("you have reached the maximum of X active alerts")
+            Bot-->>User: "❌ you have reached the maximum of X active alerts"
+        end
+    end
     AS->>Repo: IsValidCoin(ctx, coin)
     alt Coin is valid in CoinGecko
         AS->>AS: model.NewAlert(chatID, userID, coin, isGreaterThan, price)
@@ -298,7 +326,8 @@ sequenceDiagram
   1. Ensures exactly 3 arguments are provided.
   2. Ensures comparison symbol is `<` or `>`.
   3. Ensures price is a positive decimal number.
-  4. Validates `coinName` against CoinGecko's master coin list (`IsValidCoin`).
+  4. **Quota Check (Fail-Fast)**: If `MAX_ALERTS_PER_USER > 0`, checks active alert count in SQLite before calling CoinGecko.
+  5. Validates `coinName` against CoinGecko's master coin list (`IsValidCoin`).
 - **Storage**: Persisted into SQLite via GORM.
 
 ---
@@ -422,14 +451,18 @@ The bot utilizes SQLite with GORM auto-migrations. Table name: `alerts`.
 | Variable | Type | Required | Default | Description | Example |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `TELEGRAM_TOKEN` | `string` | **Yes** | - | Telegram Bot API token obtained from [@BotFather](https://t.me/botfather). | `123456789:ABCdefGHIjklMNOpqrsTUVwxyz` |
-| `WHITE_LIST` | `string` | No | *(empty)* | Comma-separated list of numeric Telegram User IDs authorized to interact with the bot. | `123456789,987654321` |
+| `WHITE_LIST` | `string` | No | *(empty)* | Comma-separated list of Telegram User IDs that bypass all rate limits. | `123456789,987654321` |
 | `PROFILE` | `string` | No | `prod` | Logging format and level (`dev` for text debug logs, `prod` for JSON logs). | `dev` or `prod` |
 | `DB_PATH` | `string` | No | `crypto_record.db` | Path to the SQLite database file. | `crypto_record.db` |
 | `ALERT_INTERVAL` | `string` | No | `3m` | Interval between background alert evaluation cycles (parsed via `time.ParseDuration`). | `1m`, `3m`, `5m` |
+| `RATE_LIMIT` | `int` | No | `15` | Maximum commands per user within the rate window. | `15`, `30` |
+| `RATE_WINDOW` | `string` | No | `1m` | Time window for rate limit tracking. | `30s`, `1m` |
+| `GUARD_CLEANUP_INTERVAL` | `string` | No | `5m` | Interval for purging inactive user tracking data from memory. | `5m`, `10m` |
+| `MAX_ALERTS_PER_USER` | `int` | No | `20` | Maximum active alerts per user (`0` = unlimited). | `20`, `50`, `0` |
 
-> ℹ️ **Note on `WHITE_LIST` behavior:**
-> - **Empty or Unset (Default)**: The bot runs in **public mode**. Any Telegram user or group chat can issue commands and manage alerts.
-> - **Populated with IDs**: The bot runs in **restricted mode**. Only users whose numeric Telegram User IDs are listed in `WHITE_LIST` will be allowed to execute commands. Messages from unauthorized users are ignored and logged.
+> ℹ️ **Note on Whitelist & Public Deployment:**
+> - **Public Mode (Default)**: Any Telegram user can use the bot. Rate limiting (`RATE_LIMIT`) and alert quotas (`MAX_ALERTS_PER_USER`) safeguard the Raspberry Pi / server resources.
+> - **Whitelisted Users**: Any Telegram User ID listed in `WHITE_LIST` automatically bypasses rate limiting.
 
 ---
 
@@ -488,7 +521,9 @@ The bot utilizes SQLite with GORM auto-migrations. Table name: `alerts`.
 ## 💡 Key Improvements & Technical Notes
 
 - **Pure Hexagonal Architecture**: The domain layer has zero imports of third-party libraries (`telegram-bot-api`, `go-gecko`, `gorm`). All external interactions are mediated through pure domain ports ([`Notifier`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/notifier.go#L6), [`CryptoRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L9), [`AlertRepository`](file:///C:/Users/emipo/go/crypto-record-bot/internal/domain/ports/repositories.go#L16)).
-- **Graceful Lifecycle & Shutdown**: Full `context.Context` propagation across all layers. Interrupt signals (`SIGINT`, `SIGTERM`) safely stop the background ticker and Telegram update listener without data corruption.
+- **Abuse Protection (`guard` package)**: Pure Go in-memory sliding window rate limiter with zero third-party dependencies, sub-microsecond latency, whitelist bypass, and automatic background cleanup goroutine.
+- **Resource Quota Protection**: Prevents database bloat by capping active alerts per user (`MAX_ALERTS_PER_USER`) with fail-fast validation before costly external API requests.
+- **Graceful Lifecycle & Shutdown**: Full `context.Context` propagation across all layers. Interrupt signals (`SIGINT`, `SIGTERM`) safely stop the background ticker, Guard cleanup, and Telegram update listener without data corruption.
 - **Structured Logging (`slog`)**: Replaced standard `log.Print` with standard Go `log/slog` structured logging (JSON in production, text in dev).
 - **Error Cascading Fix**: The background alert evaluation loop uses `continue` instead of `return` on coin query failure, ensuring individual API hiccups do not halt monitoring for other tokens.
 - **Centralized Configuration**: All environment variables are parsed and validated at startup in [`internal/config/config.go`](file:///C:/Users/emipo/go/crypto-record-bot/internal/config/config.go).

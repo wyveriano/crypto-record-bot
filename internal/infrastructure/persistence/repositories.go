@@ -110,3 +110,16 @@ func (r *alertRepository) FindByCoinName(ctx context.Context, coinName string) (
 	}
 	return alerts, nil
 }
+
+func (r *alertRepository) CountByUserID(ctx context.Context, userID int64) (int64, error) {
+	var count int64
+	result := r.db.WithContext(ctx).
+		Model(&AlertDAO{}).
+		Where("user_id = ?", userID).
+		Count(&count)
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to count alerts for user %d: %w", userID, result.Error)
+	}
+	return count, nil
+}
+

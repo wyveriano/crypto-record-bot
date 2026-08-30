@@ -3,10 +3,10 @@ package telegram
 import (
 	"CryptoRecordBot/internal/application"
 	"CryptoRecordBot/internal/domain/ports"
+	"CryptoRecordBot/internal/guard"
 	"context"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +19,7 @@ type Bot struct {
 	api          *telegram.BotAPI
 	priceService *application.PriceService
 	alertService *application.AlertService
-	whiteList    []int64
+	guard        *guard.Guard
 }
 
 // Ensure Bot implements ports.Notifier at compile-time.
@@ -30,13 +30,13 @@ func NewBot(
 	api *telegram.BotAPI,
 	priceService *application.PriceService,
 	alertService *application.AlertService,
-	whiteList []int64,
+	guard *guard.Guard,
 ) *Bot {
 	return &Bot{
 		api:          api,
 		priceService: priceService,
 		alertService: alertService,
-		whiteList:    whiteList,
+		guard:        guard,
 	}
 }
 
@@ -70,14 +70,6 @@ func (b *Bot) Start(ctx context.Context) error {
 				continue
 			}
 
-			if len(b.whiteList) > 0 && !slices.Contains(b.whiteList, update.Message.From.ID) {
-				slog.Warn("Unauthorized access attempt",
-					slog.Int64("user_id", update.Message.From.ID),
-					slog.String("username", update.Message.From.UserName),
-				)
-				continue
-			}
-
 			go b.handleMessage(ctx, update.Message)
 		}
 	}
@@ -85,6 +77,12 @@ func (b *Bot) Start(ctx context.Context) error {
 
 func (b *Bot) handleMessage(parentCtx context.Context, msg *telegram.Message) {
 	if !msg.IsCommand() {
+		return
+	}
+
+	// Guard check (single point of enforcement for rate limits and whitelist bypass)
+	if err := b.guard.Allow(msg.From.ID); err != nil {
+		b.reply(msg.Chat.ID, err.Error())
 		return
 	}
 

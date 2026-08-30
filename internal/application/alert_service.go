@@ -16,6 +16,7 @@ type AlertService struct {
 	alertRepo  ports.AlertRepository
 	cryptoRepo ports.CryptoRepository
 	notifier   ports.Notifier
+	maxAlerts  int64
 }
 
 // NewAlertService creates a new AlertService.
@@ -23,11 +24,13 @@ func NewAlertService(
 	alertRepo ports.AlertRepository,
 	cryptoRepo ports.CryptoRepository,
 	notifier ports.Notifier,
+	maxAlerts int64,
 ) *AlertService {
 	return &AlertService{
 		alertRepo:  alertRepo,
 		cryptoRepo: cryptoRepo,
 		notifier:   notifier,
+		maxAlerts:  maxAlerts,
 	}
 }
 
@@ -50,6 +53,16 @@ func (s *AlertService) CreateAlert(
 
 	if price <= 0 {
 		return model.Alert{}, errors.New("price must be greater than zero")
+	}
+
+	if s.maxAlerts > 0 {
+		count, err := s.alertRepo.CountByUserID(ctx, userID)
+		if err != nil {
+			return model.Alert{}, fmt.Errorf("failed to check alert quota: %w", err)
+		}
+		if count >= s.maxAlerts {
+			return model.Alert{}, fmt.Errorf("you have reached the maximum of %d active alerts", s.maxAlerts)
+		}
 	}
 
 	isValid, err := s.cryptoRepo.IsValidCoin(ctx, coinName)

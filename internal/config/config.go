@@ -11,11 +11,15 @@ import (
 
 // Config holds all runtime configuration settings for the application.
 type Config struct {
-	TelegramToken string
-	WhiteList     []int64
-	Profile       string
-	DBPath        string
-	AlertInterval time.Duration
+	TelegramToken    string
+	WhiteList        []int64
+	Profile          string
+	DBPath           string
+	AlertInterval    time.Duration
+	RateLimit        int
+	RateWindow       time.Duration
+	CleanupInterval  time.Duration
+	MaxAlertsPerUser int64
 }
 
 // Load parses environment variables and returns a validated Config struct.
@@ -47,12 +51,44 @@ func Load() (*Config, error) {
 		}
 	}
 
+	rateLimit := 15
+	if rlStr := strings.TrimSpace(os.Getenv("RATE_LIMIT")); rlStr != "" {
+		if parsed, err := strconv.Atoi(rlStr); err == nil && parsed > 0 {
+			rateLimit = parsed
+		}
+	}
+
+	rateWindow := time.Minute
+	if rwStr := strings.TrimSpace(os.Getenv("RATE_WINDOW")); rwStr != "" {
+		if parsed, err := time.ParseDuration(rwStr); err == nil && parsed > 0 {
+			rateWindow = parsed
+		}
+	}
+
+	cleanupInterval := 5 * time.Minute
+	if ciStr := strings.TrimSpace(os.Getenv("GUARD_CLEANUP_INTERVAL")); ciStr != "" {
+		if parsed, err := time.ParseDuration(ciStr); err == nil && parsed > 0 {
+			cleanupInterval = parsed
+		}
+	}
+
+	maxAlertsPerUser := int64(20)
+	if maStr := strings.TrimSpace(os.Getenv("MAX_ALERTS_PER_USER")); maStr != "" {
+		if parsed, err := strconv.ParseInt(maStr, 10, 64); err == nil && parsed >= 0 {
+			maxAlertsPerUser = parsed
+		}
+	}
+
 	return &Config{
-		TelegramToken: token,
-		WhiteList:     whiteList,
-		Profile:       profile,
-		DBPath:        dbPath,
-		AlertInterval: alertInterval,
+		TelegramToken:    token,
+		WhiteList:        whiteList,
+		Profile:          profile,
+		DBPath:           dbPath,
+		AlertInterval:    alertInterval,
+		RateLimit:        rateLimit,
+		RateWindow:       rateWindow,
+		CleanupInterval:  cleanupInterval,
+		MaxAlertsPerUser: maxAlertsPerUser,
 	}, nil
 }
 
