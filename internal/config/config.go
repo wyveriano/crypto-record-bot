@@ -19,7 +19,7 @@ type Config struct {
 	RateLimit        int
 	RateWindow       time.Duration
 	CleanupInterval  time.Duration
-	MaxAlertsPerUser int64
+	MaxAlertsPerUser int
 }
 
 // Load parses environment variables and returns a validated Config struct.
@@ -72,9 +72,9 @@ func Load() (*Config, error) {
 		}
 	}
 
-	maxAlertsPerUser := int64(20)
+	maxAlertsPerUser := 20
 	if maStr := strings.TrimSpace(os.Getenv("MAX_ALERTS_PER_USER")); maStr != "" {
-		if parsed, err := strconv.ParseInt(maStr, 10, 64); err == nil && parsed >= 0 {
+		if parsed, err := strconv.Atoi(maStr); err == nil && parsed >= 0 {
 			maxAlertsPerUser = parsed
 		}
 	}

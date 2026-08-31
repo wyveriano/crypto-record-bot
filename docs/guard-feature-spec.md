@@ -387,7 +387,7 @@ type AlertService struct {
     alertRepo     ports.AlertRepository
     cryptoRepo    ports.CryptoRepository
     notifier      ports.Notifier
-    maxAlerts     int64  // <-- NEW: max alerts per user (0 = unlimited)
+    maxAlerts     int  // <-- NEW: max alerts per user (0 = unlimited)
 }
 
 // In CreateAlert, BEFORE the CoinGecko validation:
@@ -396,7 +396,7 @@ if s.maxAlerts > 0 {
     if err != nil {
         return model.Alert{}, fmt.Errorf("failed to check alert quota: %w", err)
     }
-    if count >= s.maxAlerts {
+    if count >= int64(s.maxAlerts) {
         return model.Alert{}, fmt.Errorf("you have reached the maximum of %d active alerts", s.maxAlerts)
     }
 }
@@ -425,7 +425,7 @@ type Config struct {
     CleanupInterval time.Duration // Env: GUARD_CLEANUP_INTERVAL, Default: 5m
 
     // Alert Quota
-    MaxAlertsPerUser int64        // Env: MAX_ALERTS_PER_USER, Default: 20
+    MaxAlertsPerUser int          // Env: MAX_ALERTS_PER_USER, Default: 20
 }
 ```
 
